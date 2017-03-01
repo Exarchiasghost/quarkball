@@ -9,12 +9,20 @@ quarkball2017: base classes
 from __future__ import (
     division, absolute_import, print_function, unicode_literals)
 
-import array
+import random
+import multiprocessing
 import numpy as np
+
 try:
     from numba import jit
 except ImportError:
-    jit = None
+    print('E: Numba not found!')
+
+
+    def jit(_):
+        return _
+else:
+    print('I: Using Numba!')
 
 
 # ======================================================================
@@ -220,12 +228,14 @@ class Caching(object):
     # ----------------------------------------------------------
     def validate(self, videos, cache_size):
         is_valid = True
-        for files in self.caches:
-            if files:
-                filled = 0
-                for file in files:
-                    filled += videos[file]
-                is_valid = is_valid and (filled <= cache_size)
+        for cached_videos in self.caches:
+            if cached_videos:
+                avail_cache = cache_size
+                for cached_video in cached_videos:
+                    avail_cache -= videos[cached_video]
+                is_valid = is_valid and (avail_cache >= 0)
+            if not is_valid:
+                break
         return is_valid
 
     # ----------------------------------------------------------
@@ -235,8 +245,23 @@ class Caching(object):
             network.endpoint_latencies)
 
     # ----------------------------------------------------------
+    def clear(self):
+        self.caches = [set() for i in range(self.num_caches)]
+
+    # ----------------------------------------------------------
     def fill(self, network):
-        raise NotImplementedError('Good Luck and Have Fun!')
+        min_video_size = np.min(network.videos)
+        new_videos = list(range(network.num_videos))
+        random.shuffle(new_videos)
+        for cache in self.caches:
+            avail_cache = network.cache_size
+            for new_video in new_videos:
+                video_size = network.videos[new_video]
+                if video_size <= avail_cache:
+                    cache.add(new_video)
+                    avail_cache -= video_size
+                if min_video_size > avail_cache:
+                    break
 
 
 # ======================================================================
@@ -255,3 +280,29 @@ def _score(caches, requests, cache_latencies, endpoint_latencies):
         score += (max_latency - latency) * num
     score = int(score / num_tot * 1000)
     return score
+
+
+# ======================================================================
+def _score_par(caches, requests, cache_latencies, endpoint_latencies):
+    pool = multiprocessing.Pool(multiprocessing.cpu_count())
+    scores, nums = [], []
+    results = [
+        pool.apply_async(
+            _score_request,
+            (caches, video, endpoint, num, cache_latencies, endpoint_latencies))
+        for video, endpoint, num in requests]
+    # todo
+    scores, nums = zip(*results)
+
+
+# ======================================================================
+def _score_request(
+        caches, video, endpoint, num, cache_latencies, endpoint_latencies):
+    latency = max_latency = endpoint_latencies[endpoint]
+    for cache, videos in enumerate(caches):
+        if video in videos:
+            cache_latency = cache_latencies[endpoint, cache]
+            if cache_latency and cache_latency < latency:
+                latency = cache_latencies[endpoint, cache]
+    score = (max_latency - latency) * num
+    return score, num
